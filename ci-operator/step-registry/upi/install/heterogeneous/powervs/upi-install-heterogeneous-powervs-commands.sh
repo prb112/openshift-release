@@ -53,8 +53,7 @@ case "$CLUSTER_TYPE" in
       echo "Adding additional ppc64le nodes"
       REGION="${LEASED_RESOURCE}"
       IBMCLOUD_HOME_FOLDER=/tmp/ibmcloud
-      SERVICE_NAME=power-iaas
-      SERVICE_PLAN_NAME=power-virtual-server-group
+
       WORKSPACE_NAME=rdr-mac-${REGION}-n1
 
       PATH=${PATH}:/tmp
@@ -116,7 +115,7 @@ case "$CLUSTER_TYPE" in
       RESOURCE_GROUP=$(yq -r '.platform.ibmcloud.resourceGroupName' "${SHARED_DIR}/install-config.yaml")
 
       ic login --apikey "@${CLUSTER_PROFILE_DIR}/ibmcloud-api-key" -r "${REGION}" -g "${RESOURCE_GROUP}"
-      ic plugin install -f cloud-internet-services vpc-infrastructure cloud-object-storage power-iaas is
+      ic plugin install -f power-iaas
 
       # Before the workspace is created, download the automation code
       cd "${IBMCLOUD_HOME_FOLDER}" \
@@ -124,67 +123,13 @@ case "$CLUSTER_TYPE" in
         && tar -xzf "${IBMCLOUD_HOME_FOLDER}"/ocp-"${OCP_VERSION}".tar.gz \
         && mv "${IBMCLOUD_HOME_FOLDER}/ocp4-upi-compute-powervs-release-${OCP_VERSION}" "${IBMCLOUD_HOME_FOLDER}"/ocp4-upi-compute-powervs
 
-      # create workspace for powervs from cli
-      echo "Display all the variable values:"
-      POWERVS_REGION=$(bash "${IBMCLOUD_HOME_FOLDER}"/ocp4-upi-compute-powervs/scripts/region.sh "${REGION}")
-      echo "VPC Region is ${REGION}"
-      echo "PowerVS region is ${POWERVS_REGION}"
-      echo "Resource Group is ${RESOURCE_GROUP}"
-      ic resource service-instance-create "${WORKSPACE_NAME}" "${SERVICE_NAME}" "${SERVICE_PLAN_NAME}" "${POWERVS_REGION}" -g "${RESOURCE_GROUP}" 2>&1 \
-        | tee /tmp/instance.id
-      
       # Process the CRN into a variable
-      CRN=$(cat /tmp/instance.id | grep crn | awk '{print $NF}')
+      CRN=$(ibmcloud pi sl --json | jq -r '.[] | select(.Name == "'"${WORKSPACE_NAME}"'").CRN')
       export CRN
+
       echo "${CRN}" > "${SHARED_DIR}"/POWERVS_SERVICE_CRN
-      sleep 30
-
-      # Tag the resource for easier deletion
-      ic resource tag-attach --tag-names "mac-power-worker" --resource-id "${CRN}" --tag-type user
-
-      # Waits for the created instance to become active... after 10 minutes it fails and exists
-      # Example content for TEMP_STATE
-      # active
-      # crn:v1:bluemix:public:power-iaas:osa21:a/3c24cb272ca44aa1ac9f6e9490ac5ecd:6632ebfa-ae9e-4b6c-97cd-c4b28e981c46::
-      COUNTER=0
-      SERVICE_STATE=""
-      while [ -z "${SERVICE_STATE}" ]
-      do
-        COUNTER=$((COUNTER+1)) 
-        TEMP_STATE="$(ic resource service-instances -g "${RESOURCE_GROUP}" --output json --type service_instance  | jq -r '.[] | select(.crn == "'"${CRN}"'") | .state')"
-        echo "Current State is: ${TEMP_STATE}"
-        echo ""
-        if [ "${TEMP_STATE}" == "active" ]
-        then
-          SERVICE_STATE="FOUND"
-        elif [[ $COUNTER -ge 20 ]]
-        then
-          SERVICE_STATE="ERROR"
-          echo "Service has not come up... login and verify"
-          exit 2
-        else
-          echo "Waiting for service to become active... [30 seconds]"
-          sleep 30
-        fi
-      done
-
-      echo "SERVICE_STATE: ${SERVICE_STATE}"
-
-      # This CRN is useful when manually destroying.
-      echo "PowerVS Service CRN: ${CRN}"
-
       echo "${RESOURCE_GROUP}" > "${SHARED_DIR}"/RESOURCE_GROUP
       echo "${OCP_VERSION}" > "${SHARED_DIR}"/OCP_VERSION
-
-      # The CentOS-Stream-8 image is stock-image on PowerVS.
-      # This image is available across all PowerVS workspaces.
-      # The VMs created using this image are used in support of ignition on PowerVS.
-      echo "Creating the Centos Stream Image"
-      echo "PowerVS Target CRN is: ${CRN}"
-      ic pi st "${CRN}"
-      ic pi images
-      ic pi image-create CentOS-Stream-8 --json
-      echo "Import image status is: $?"
 
       # Set the values to be used for generating var.tfvars
       POWERVS_SERVICE_INSTANCE_ID=$(echo "${CRN}" | sed 's|:| |g' | awk '{print $NF}')
@@ -201,7 +146,6 @@ case "$CLUSTER_TYPE" in
       cd ${IBMCLOUD_HOME_FOLDER}/ocp4-upi-compute-powervs \
         && bash scripts/create-var-file.sh /tmp/ibmcloud "${ADDITIONAL_WORKERS}"
 
-      # TODO:MAC check if the var.tfvars file is populated
       VARFILE_OUTPUT=$(cat "${IBMCLOUD_HOME_FOLDER}"/ocp4-upi-compute-powervs/data/var.tfvars)
       echo "varfile_output is ${VARFILE_OUTPUT}"
 
@@ -228,34 +172,8 @@ case "$CLUSTER_TYPE" in
           || sleep 120 \
           || /tmp/terraform destroy -var-file=data/var.tfvars -auto-approve -no-color \
           || true
-        echo "cleaning up workspace"
-        ic resource service-instance-delete "${POWERVS_SERVICE_INSTANCE_ID}" -g "${RESOURCE_GROUP}" --force --recursive \
-          || true
+
         exit 1
-      else
-        echo "Worker Status is: "
-        oc get nodes -o jsonpath='{range .items[*]}{.metadata.name}{","}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
-        echo "Cluster Operator is: "
-        oc get co
-        IDX=0
-        while [ "$IDX" -lt "121" ]
-        do
-            FAL_COUNT=$(oc get co -o jsonpath='{range .items[*]}{.metadata.name}{","}{.status.conditions[?(@.type=="Available")].status}{"\n"}{end}' | grep False | wc -l)
-            if [ "${FAL_COUNT}" -eq "0" ]
-            then
-              break
-            fi
-            if [ "${IDX}" -eq "60" ]
-            then
-              echo "Exceeded the wait time of >120 minutes"
-              exit 3
-            fi
-            oc get co -o yaml
-            echo "waiting for the cluster operators to return to operation"
-            sleep 60
-            IDX=$(($IDX + 1))
-        done
-        
       fi
   fi
 ;;
