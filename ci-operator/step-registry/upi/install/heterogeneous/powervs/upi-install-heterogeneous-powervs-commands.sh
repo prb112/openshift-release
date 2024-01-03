@@ -34,7 +34,12 @@ function cleanup_ibmcloud_powervs() {
     if [ -n "${VALID_GW}" ]
     then
       TG_CRN=$(echo "${VALID_GW}" | jq -r '.crn')
-      TAGS=$(ic resource search "crn:\"${TG_CRN}\"" --output json | jq -r '.items[].tags[]' | grep "mac-cicd-${version}" || true )
+      if [ -z "${E2E_RUN_TAGS}" ]; then
+        CUCUSHIFT_TAG="cucushift-"
+      else
+        CUCUSHIFT_TAG=""
+      fi
+      TAGS=$(ic resource search "crn:\"${TG_CRN}\"" --output json | jq -r '.items[].tags[]' | grep "mac-cicd-${CUCUSHIFT_TAG}${version}" || true )
       if [ -n "${TAGS}" ]
       then
         for CS in $(ic tg connections "${GW}" --output json | jq -r '.[].id')
@@ -271,7 +276,12 @@ case "$CLUSTER_TYPE" in
       sleep 30
 
       # Tag the resource for easier deletion
-      ic resource tag-attach --tag-names "mac-power-worker-${CLEAN_VERSION}" --resource-id "${CRN}" --tag-type user
+      if [ -z "${E2E_RUN_TAGS}" ]; then
+        CUCUSHIFT="-cucushift"
+      else
+        CUCUSHIFT=""
+      fi
+      ic resource tag-attach --tag-names "mac-power-worker-${CLEAN_VERSION}${CUCUSHIFT}" --resource-id "${CRN}" --tag-type user
 
       # Waits for the created instance to become active... after 10 minutes it fails and exists
       # Example content for TEMP_STATE
