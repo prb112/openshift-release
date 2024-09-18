@@ -103,15 +103,7 @@ function cleanup_ibmcloud_vpc() {
     fi
   done
 
-  echo "Cleaning up COS Instances"
-  VALID_COS=$(ic resource service-instances 2> /dev/null | grep "${cos_name}" || true)
-  if [ -n "${VALID_COS}" ]
-  then
-    for COS in $(ic resource service-instance "${cos_name}" --output json -q | jq -r '.[].guid')
-    do
-      retry "ic resource service-instance-delete ${COS} --force --recursive"
-    done
-  fi
+  # Dev note: must delete the cos images
 
   echo "Done cleaning up prior runs"
 }
@@ -160,6 +152,7 @@ function clone_mac_vpc_artifacts(){
 function destroy_mac_vpc_resources() {
   cd "${IBMCLOUD_HOME_FOLDER}"/ocp4-mac-vpc/ || true
   "${IBMCLOUD_HOME_FOLDER}"/terraform destroy -var-file var-mac-vpc.tfvars -auto-approve || true
+  # Dev Note: this might be problematic as we'll have to delete the security groups if it's not done correctly.
 }
 
 echo "Invoking upi deprovision heterogeneous vpc for ${VPC_NAME}"
